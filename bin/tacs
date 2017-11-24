@@ -76,7 +76,7 @@
 #	   Mon Oct 16 16:17:02 CEST 2017 - Initial version
 PAGER=""
 Program=${0##*/}
-Release=0.5.2
+Release=0.5.4
 ScriptName=""
 ScriptVersion="$Release"
 VerboseMode=false
