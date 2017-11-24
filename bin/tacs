@@ -1,0 +1,300 @@
+#!/bin/bash -p
+#@STARTMAN
+#tacs(1) 	      Pilot Prototype Factory              tacs(1)
+#
+#
+#	NAME
+#	    tacs - Generate SSH config entry based on PPF terraform environment
+# 
+#	SYNOPSIS
+#@USAGE	    tacs [-?|?] [-vm] [-p aws_profile] environment-folder
+#@USAGE
+#	OPTIONS
+#@USAGE	    -v keep user informed of progress
+#@USAGE	    -m show manual page
+#@USAGE	    -p aws profile
+#@USAGE	    -? show usage
+#@USAGE	    
+#	DESCRIPTION
+#           tacs checks current environment files for project and environment settings.
+#	    Uses these settings to setup ssh to the environment bastion host.
+# 	
+#           If an AWS profile is given, it will be sourced and the environment defined 
+#           in the AWS profile will be used.
+#
+#	EXAMPLE
+#           The following example creates ssh files in
+#	    ~/.ssh folder
+#           $ source ~/.aws/forest
+#	    $ tacs
+#
+#	    Another example shows the status of progress :
+#           $ source ~/.aws/forest
+#           $ tacs -v
+#
+#	RETURN VALUE
+#	    0 on success
+#	   >0 on failure
+#
+#	COPYRIGHT
+#	   Copyright (c) 2017 Danny Ruijzendaal
+#
+#          Permission is hereby granted, free of charge, to any person obtaining a copy
+#          of this software and associated documentation files (the "Software"), to deal
+#          in the Software without restriction, including without limitation the rights
+#          to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+#          copies of the Software, and to permit persons to whom the Software is
+#          furnished to do so, subject to the following conditions:
+#          
+#          The above copyright notice and this permission notice shall be included in all
+#          copies or substantial portions of the Software.
+#          
+#          THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#          IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#          FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#          AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#          LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#          OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+#          SOFTWARE.
+#
+#	AUTHOR
+#	   (1.0) Danny Ruijzendaal
+#
+#tacs(1) 	      Pilot Prototype Factory              tacs(1)
+#@STOPMAN
+#
+#       POSSIBLE ENHANCEMENTS
+#          SSH config file template is hard coded. port forwarding 
+#          examples could be based on ecs instance query data.
+#
+#          Bucket naming convention and identity file location
+#          within bucket is currently assumed.
+#
+#          AWS profile as a parameter
+#
+#	LAST CHANGE
+#	   Mon Oct 16 16:17:02 CEST 2017 - Initial version
+PAGER=""
+Program=${0##*/}
+Release=0.5.1
+ScriptName=""
+ScriptVersion="$Release"
+VerboseMode=false
+#
+function Usage
+{
+  printf "$Program version : $Release\n"
+  {
+	IFS="#"
+	while read LINE
+	do
+	  case $LINE in
+		"#@USAGE"*)	printf "     %s\n" ${LINE#\#@USAGE}
+		;;
+	  esac
+	done
+  } < $1 
+}
+#
+function Man
+{
+	: ${PAGER:=more}
+	IFS="#"
+        while read LINE
+        do
+          case $LINE in
+                "#@STARTMAN"*)  InMan=true ; continue
+                ;;
+                "#@STOPMAN"*)   break ;
+                ;;
+                "#@USAGE"*)     printf "     %s\n" ${LINE#\#@USAGE}
+                ;;
+                *)              [[ $InMan = true ]] && printf " %s\n" ${LINE#\#}
+                ;;
+          esac
+        done < $1  | $PAGER
+}
+#
+function Error
+{
+        printf "Error: %s\n" "$*"
+}
+#
+function Verbose
+{
+        TS=$(date +"%Y-%m-%d %H:%M:%S")
+        [[ "$VerboseMode" = true ]] && printf '%s %s\n' "$TS" "$*"
+}
+#
+function Depends
+{
+    typeset -i AllDependenciesAvailable=1
+    Verbose -- "Checking dependencies"
+    ThisScriptDependsOn="date gawk aws tee printf umask"
+    for i in $ThisScriptDependsOn
+    do
+        ToolAvailable=$(which $i 2>/dev/null)
+        if [[ "$ToolAvailable" = "" ]]
+        then
+            Error "Tool <$i> not found, please make sure it is in your PATH environment."
+            AllDependenciesAvailable=0
+        fi
+    done
+    return $AllDependenciesAvailable
+}
+#
+#
+function awsGetPublicIp
+# $1 = tag filter
+{
+        aws ec2 describe-instances --query "Reservations[*].Instances[*].[PublicIpAddress,Tags[?Key=='Name'].Value[]]" --filter Name=tag:Name,Values="$1*" --output text | head -1
+}
+#
+function cpS3KeyFiles
+# $1 = BaseBucket
+# $2 = Environment
+{       
+        typeset BaseBucket=$1
+        typeset Environment=$2
+        typeset IdentityFiles=$BaseBucket/$Environment/keys/generated
+        aws s3 ls s3://$IdentityFiles/ > /dev/null
+        (( $? != 0 )) && Error "Error listing key s3://$IdentityFiles/, bailing out" && exit 1
+
+        SavedUmask=$(umask)
+        umask 077
+        S3File=id_rsa
+        S3Source=s3://$IdentityFiles/${S3File}
+        FSDestination=~/.ssh/${S3File}_$Environment
+        Verbose "-- Copying $S3Source -> $FSDestination"
+        aws s3 cp $S3Source $FSDestination  > /dev/null
+        (( $? != 0 )) && Error "Error copying $S3Source -> $FSDestination, bailing out" && exit 1
+        S3File=id_rsa.pub
+        S3Source=s3://$IdentityFiles/${S3File}
+        FSDestination=~/.ssh/${S3File%%.pub}_$Environment.pub
+        Verbose "-- Copying $S3Source -> $FSDestination"
+        aws s3 cp $S3Source $FSDestination  > /dev/null
+        (( $? != 0 )) && Error "Error copying $S3Source -> $FSDestination, bailing out" && exit 1
+        umask $SavedUmask
+}
+#
+function sshAppendConfigEntry
+# $1 = PublicIpAddress 
+# $2 = Environment
+{
+        typeset PublicIpAddress=$1
+        typeset Environment=$2
+        typeset VerboseCmd="tee -a"
+        Verbose "-- Adding the following section to your ~/.ssh/config file for your convenience:"
+        $VerboseCmd  ~/.ssh/config <<-EOF
+
+# Generated by ${0##*/} @ $(date)
+#
+# To safely connect to bastion en ecs instances in 
+# VPC's, type:
+#
+# ssh-add $HOME/.ssh/id_rsa_$Environment
+# ssh bast$Environment
+Host bast$Environment
+    #
+    Hostname $PublicIpAddress 
+    IdentityFile $HOME/.ssh/id_rsa_$Environment
+    User ec2-user
+    ForwardAgent yes
+    # LocalForward 15432 db.vitalminds.vm-staging.local:5432
+    # RabbitMQ
+    # LocalForward 55672 10.0.2.254:15672
+    # LocalForward 48761 10.0.4.205:32780
+EOF
+        
+}
+#
+function awsGetAccount
+{
+        aws sts get-caller-identity --output text --query 'Account'        
+}
+#
+while getopts ":vmr:p:" Option $*
+do
+        case $Option in
+        v)      VerboseMode=true
+                ;;
+        r)      ScriptVersion=$OPTARG
+                ;;
+
+        m)      Man $0
+                exit 0
+                ;;
+
+        p)      AwsProfile=$OPTARG
+                [[ ! -f $AwsProfile ]] && Error "AWS profile $AwsProfile does not exist" && exit 1
+                set -a
+                source $AwsProfile
+                set +a                
+                ;;
+
+        ?)      # Be sure to put this at the end of the case
+		# options after ? will not be recongnised !
+		Usage $0
+                exit 0
+                ;;
+        esac
+done
+#
+shift $(( ${OPTIND} - 1 ))
+
+#
+if [[ $# -eq 1 && "$1" = "?" ]]
+then
+        Usage $0
+        exit 0
+fi
+#
+if (( $# != 1 ))
+then
+        Usage $0
+        exit 1
+fi
+#
+Environment=$1
+[[ ! -d $Environment ]] && Error "$Environment does not exist" && exit 1
+
+#
+# Check dependencies
+Depends
+if (( $? == 0 ))
+then
+        exit 1
+fi
+#
+AwsAccountNumber=$(awsGetAccount)
+[[ -z $AwsAccountNumber ]] && Error "AWS environment not set" && exit 1
+Verbose "-- Using AWS account: $AwsAccountNumber"
+#
+Verbose "-- Getting environment info from $Environment"
+envFile=$Environment/.env
+[[ ! -f $envFile ]] && Error "Environment file $envFile does not exist" && exit 1
+
+# Each variable or function that is created or modified is given the export
+# attribute and marked for export to the environment of subsequent commands.
+set -a
+source $envFile
+set +a
+
+Verbose "-- Extracting public IP from $Environment"
+[[ -z $TF_VAR_environment ]] && Error "TF_VAR_environment not defined in $envFile" && exit 1
+PublicIpAddress=$(awsGetPublicIp ${TF_VAR_environment}-bastion)
+
+Verbose "-- Copy-ing ssh keys from S3"
+export AWS_ACCOUNT_ID=$AwsAccountNumber
+envFile=./.env
+[[ ! -f $envFile ]] && Error "Environment file $envFile does not exist" && exit 1
+set -a
+source $envFile
+set +a
+[[ -z $TF_VAR_bucket ]] && Error "TF_VAR_bucket not defined in $envFile" && exit 1
+[[ -z $TF_VAR_environment ]] && Error "TF_VAR_environment not defined in $envFile" && exit 1
+cpS3KeyFiles $TF_VAR_bucket $TF_VAR_environment
+
+echo "-- Appending ssh config entry for your convenience:"
+sshAppendConfigEntry $PublicIpAddress $TF_VAR_environment
+echo "-- Done"
