@@ -16,13 +16,13 @@ Generate ssh config entry
 
 #### OSX
 ```sh
-brew tap ruijzndl/tacs
+brew tap ruijzndl/tap
 brew install tacs
 ```
 
 #### Other systems
 
-Clone this repo, or download and unzip the [tarball](https://github.com/ruijzndl/tacs/archive/0.5.4.tar.gz). Either add the `bin` directory to your `$PATH`, or create a symlink in your `$PATH` that points to the **tacs** executable in the `bin` directory.
+Clone this repo, or download and unzip the [tarball](https://github.com/ruijzndl/tacs/archive/0.5.5.tar.gz). Either add the `bin` directory to your `$PATH`, or create a symlink in your `$PATH` that points to the **tacs** executable in the `bin` directory.
 
 If you execute **tacs** via symlink, *make sure that the name of the target file (the symlink) is also tacs*. Otherwise, tab completions won't work.
 
